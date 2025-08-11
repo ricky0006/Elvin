@@ -76,7 +76,8 @@ bool CheckTradingHours()
 {
    if(!InpUseTradingHours) return true;
    datetime now = TimeCurrent();
-   int hour = TimeHour(now);
+   MqlDateTime ts; TimeToStruct(now, ts);
+   int hour = ts.hour;
    if(InpStartHour <= InpEndHour)
       return (hour >= InpStartHour && hour < InpEndHour);
    // window across midnight
@@ -116,7 +117,8 @@ int CountPositionsByDirection(int direction)
    int count = 0;
    for(int i=0;i<total;i++)
    {
-      if(!PositionSelectByIndex(i)) continue;
+      ulong ticket = PositionGetTicket(i);
+      if(ticket==0 || !PositionSelectByTicket(ticket)) continue;
       string posSymbol; PositionGetString(POSITION_SYMBOL, posSymbol);
       if(posSymbol != g_symbol) continue;
       if((long)PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
@@ -133,7 +135,8 @@ int CountAllPositions()
    int count = 0;
    for(int i=0;i<total;i++)
    {
-      if(!PositionSelectByIndex(i)) continue;
+      ulong ticket = PositionGetTicket(i);
+      if(ticket==0 || !PositionSelectByTicket(ticket)) continue;
       string posSymbol2; PositionGetString(POSITION_SYMBOL, posSymbol2);
       if(posSymbol2 != g_symbol) continue;
       if((long)PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
@@ -148,7 +151,8 @@ double GetNetExposureLots(int direction)
    double lots = 0.0;
    for(int i=0;i<total;i++)
    {
-      if(!PositionSelectByIndex(i)) continue;
+      ulong ticket = PositionGetTicket(i);
+      if(ticket==0 || !PositionSelectByTicket(ticket)) continue;
       string posSymbol3; PositionGetString(POSITION_SYMBOL, posSymbol3);
       if(posSymbol3 != g_symbol) continue;
       if((long)PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
@@ -169,7 +173,8 @@ bool GetLastEntry(int direction, double &price, datetime &timeOpen)
    bool found = false;
    for(int i=0;i<total;i++)
    {
-      if(!PositionSelectByIndex(i)) continue;
+      ulong ticket = PositionGetTicket(i);
+      if(ticket==0 || !PositionSelectByTicket(ticket)) continue;
       string posSymbol4; PositionGetString(POSITION_SYMBOL, posSymbol4);
       if(posSymbol4 != g_symbol) continue;
       if((long)PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
@@ -205,7 +210,8 @@ double GetBasketProfitMoney()
    double sum = 0.0;
    for(int i=0;i<total;i++)
    {
-      if(!PositionSelectByIndex(i)) continue;
+      ulong ticket = PositionGetTicket(i);
+      if(ticket==0 || !PositionSelectByTicket(ticket)) continue;
       string posSymbol5; PositionGetString(POSITION_SYMBOL, posSymbol5);
       if(posSymbol5 != g_symbol) continue;
       if((long)PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
@@ -223,13 +229,13 @@ bool CloseAllPositions()
       int total = PositionsTotal();
       for(int i=total-1;i>=0;i--)
       {
-         if(!PositionSelectByIndex(i)) continue;
+         ulong ticket = PositionGetTicket(i);
+         if(ticket==0 || !PositionSelectByTicket(ticket)) continue;
          string posSymbol6; PositionGetString(POSITION_SYMBOL, posSymbol6);
          if(posSymbol6 != g_symbol) continue;
          if((long)PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
          long type = PositionGetInteger(POSITION_TYPE);
          if((pass==0 && type!=POSITION_TYPE_BUY) || (pass==1 && type!=POSITION_TYPE_SELL)) continue;
-         ulong ticket = (ulong)PositionGetInteger(POSITION_TICKET);
          double volume = PositionGetDouble(POSITION_VOLUME);
          if(type == POSITION_TYPE_BUY)
          {
@@ -341,7 +347,8 @@ void ApplyTrailingStop()
    int total = PositionsTotal();
    for(int i=0;i<total;i++)
    {
-      if(!PositionSelectByIndex(i)) continue;
+      ulong ticket = PositionGetTicket(i);
+      if(ticket==0 || !PositionSelectByTicket(ticket)) continue;
       string posSymbol7; PositionGetString(POSITION_SYMBOL, posSymbol7);
       if(posSymbol7 != g_symbol) continue;
       if((long)PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
