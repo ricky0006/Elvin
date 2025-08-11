@@ -117,7 +117,8 @@ int CountPositionsByDirection(int direction)
    for(int i=0;i<total;i++)
    {
       if(!PositionSelectByIndex(i)) continue;
-      if(PositionGetString(POSITION_SYMBOL) != g_symbol) continue;
+      string posSymbol; PositionGetString(POSITION_SYMBOL, posSymbol);
+      if(posSymbol != g_symbol) continue;
       if((long)PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
       long type = PositionGetInteger(POSITION_TYPE);
       if(direction > 0 && type == POSITION_TYPE_BUY) count++;
@@ -133,7 +134,8 @@ int CountAllPositions()
    for(int i=0;i<total;i++)
    {
       if(!PositionSelectByIndex(i)) continue;
-      if(PositionGetString(POSITION_SYMBOL) != g_symbol) continue;
+      string posSymbol2; PositionGetString(POSITION_SYMBOL, posSymbol2);
+      if(posSymbol2 != g_symbol) continue;
       if((long)PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
       count++;
    }
@@ -147,7 +149,8 @@ double GetNetExposureLots(int direction)
    for(int i=0;i<total;i++)
    {
       if(!PositionSelectByIndex(i)) continue;
-      if(PositionGetString(POSITION_SYMBOL) != g_symbol) continue;
+      string posSymbol3; PositionGetString(POSITION_SYMBOL, posSymbol3);
+      if(posSymbol3 != g_symbol) continue;
       if((long)PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
       long type = PositionGetInteger(POSITION_TYPE);
       double vol = PositionGetDouble(POSITION_VOLUME);
@@ -167,7 +170,8 @@ bool GetLastEntry(int direction, double &price, datetime &timeOpen)
    for(int i=0;i<total;i++)
    {
       if(!PositionSelectByIndex(i)) continue;
-      if(PositionGetString(POSITION_SYMBOL) != g_symbol) continue;
+      string posSymbol4; PositionGetString(POSITION_SYMBOL, posSymbol4);
+      if(posSymbol4 != g_symbol) continue;
       if((long)PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
       long type = PositionGetInteger(POSITION_TYPE);
       if((direction > 0 && type != POSITION_TYPE_BUY) || (direction < 0 && type != POSITION_TYPE_SELL)) continue;
@@ -202,7 +206,8 @@ double GetBasketProfitMoney()
    for(int i=0;i<total;i++)
    {
       if(!PositionSelectByIndex(i)) continue;
-      if(PositionGetString(POSITION_SYMBOL) != g_symbol) continue;
+      string posSymbol5; PositionGetString(POSITION_SYMBOL, posSymbol5);
+      if(posSymbol5 != g_symbol) continue;
       if((long)PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
       sum += PositionGetDouble(POSITION_PROFIT);
    }
@@ -219,7 +224,8 @@ bool CloseAllPositions()
       for(int i=total-1;i>=0;i--)
       {
          if(!PositionSelectByIndex(i)) continue;
-         if(PositionGetString(POSITION_SYMBOL) != g_symbol) continue;
+         string posSymbol6; PositionGetString(POSITION_SYMBOL, posSymbol6);
+         if(posSymbol6 != g_symbol) continue;
          if((long)PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
          long type = PositionGetInteger(POSITION_TYPE);
          if((pass==0 && type!=POSITION_TYPE_BUY) || (pass==1 && type!=POSITION_TYPE_SELL)) continue;
@@ -227,11 +233,11 @@ bool CloseAllPositions()
          double volume = PositionGetDouble(POSITION_VOLUME);
          if(type == POSITION_TYPE_BUY)
          {
-            ok &= Trade.PositionClose(ticket, volume);
+            ok &= Trade.PositionClose(ticket);
          }
          else if(type == POSITION_TYPE_SELL)
          {
-            ok &= Trade.PositionClose(ticket, volume);
+            ok &= Trade.PositionClose(ticket);
          }
       }
    }
@@ -249,7 +255,8 @@ double GetTodayClosedProfit()
    {
       ulong dealTicket = HistoryDealGetTicket(i);
       if(dealTicket == 0) continue;
-      if((string)HistoryDealGetString(dealTicket, DEAL_SYMBOL) != g_symbol) continue;
+      string dealSymbol; HistoryDealGetString(dealTicket, DEAL_SYMBOL, dealSymbol);
+      if(dealSymbol != g_symbol) continue;
       long entry   = HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
       long magic   = HistoryDealGetInteger(dealTicket, DEAL_MAGIC);
       if(magic != InpMagic) continue;
@@ -335,7 +342,8 @@ void ApplyTrailingStop()
    for(int i=0;i<total;i++)
    {
       if(!PositionSelectByIndex(i)) continue;
-      if(PositionGetString(POSITION_SYMBOL) != g_symbol) continue;
+      string posSymbol7; PositionGetString(POSITION_SYMBOL, posSymbol7);
+      if(posSymbol7 != g_symbol) continue;
       if((long)PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
       long type = PositionGetInteger(POSITION_TYPE);
       double priceCurrent = 0.0;
@@ -491,8 +499,10 @@ void HandleHedging(int trendDir)
 int OnInit()
 {
    g_symbol = _Symbol;
-   g_digits = (int)SymbolInfoInteger(g_symbol, SYMBOL_DIGITS);
-   g_point = SymbolInfoDouble(g_symbol, SYMBOL_POINT);
+   long tmpDigits; SymbolInfoInteger(g_symbol, SYMBOL_DIGITS, tmpDigits);
+   g_digits = (int)tmpDigits;
+   double tmpPoint; SymbolInfoDouble(g_symbol, SYMBOL_POINT, tmpPoint);
+   g_point = tmpPoint;
 
    Trade.SetExpertMagicNumber(InpMagic);
    Trade.SetDeviationInPoints(InpSlippage);
