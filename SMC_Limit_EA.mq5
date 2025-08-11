@@ -147,11 +147,13 @@ int CountOurPendingByType(ENUM_ORDER_TYPE type)
    int count = 0;
    for(int i=0; i<OrdersTotal(); i++)
    {
-      if(!OrderSelect(i, SELECT_BY_POS)) continue;
-      string sym; ulong magic; ENUM_ORDER_TYPE t;
+      if(!OrderSelect(i, SELECT_BY_INDEX)) continue;
+      string sym; long magicL; long typeL;
       OrderGetString(ORDER_SYMBOL, sym);
-      OrderGetInteger(ORDER_MAGIC, magic);
-      OrderGetInteger(ORDER_TYPE, (long&)t);
+      OrderGetInteger(ORDER_MAGIC, magicL);
+      OrderGetInteger(ORDER_TYPE, typeL);
+      ENUM_ORDER_TYPE t = (ENUM_ORDER_TYPE)typeL;
+      ulong magic = (ulong)magicL;
       if(sym == _Symbol && magic == (ulong)InpMagicNumber && t == type) count++;
    }
    return count;
@@ -162,10 +164,11 @@ int CountOurPendingAll()
    int count = 0;
    for(int i=0; i<OrdersTotal(); i++)
    {
-      if(!OrderSelect(i, SELECT_BY_POS)) continue;
-      string sym; ulong magic;
+      if(!OrderSelect(i, SELECT_BY_INDEX)) continue;
+      string sym; long magicL;
       OrderGetString(ORDER_SYMBOL, sym);
-      OrderGetInteger(ORDER_MAGIC, magic);
+      OrderGetInteger(ORDER_MAGIC, magicL);
+      ulong magic = (ulong)magicL;
       if(sym == _Symbol && magic == (ulong)InpMagicNumber) count++;
    }
    return count;
@@ -193,12 +196,15 @@ void DeletePendingByType(ENUM_ORDER_TYPE type)
 {
    for(int i=OrdersTotal()-1; i>=0; i--)
    {
-      if(!OrderSelect(i, SELECT_BY_POS)) continue;
-      string sym; ulong magic; ENUM_ORDER_TYPE t; ulong ticket;
+      if(!OrderSelect(i, SELECT_BY_INDEX)) continue;
+      string sym; long magicL; long typeL; long ticketL;
       OrderGetString(ORDER_SYMBOL, sym);
-      OrderGetInteger(ORDER_MAGIC, magic);
-      OrderGetInteger(ORDER_TYPE, (long&)t);
-      OrderGetInteger(ORDER_TICKET, ticket);
+      OrderGetInteger(ORDER_MAGIC, magicL);
+      OrderGetInteger(ORDER_TYPE, typeL);
+      OrderGetInteger(ORDER_TICKET, ticketL);
+      ENUM_ORDER_TYPE t = (ENUM_ORDER_TYPE)typeL;
+      ulong magic = (ulong)magicL;
+      ulong ticket = (ulong)ticketL;
       if(sym != _Symbol || magic != (ulong)InpMagicNumber) continue;
       if(t != type) continue;
       if(!trade.OrderDelete((ulong)ticket))
@@ -376,12 +382,15 @@ ulong FindExistingPendingOfType(ENUM_ORDER_TYPE type)
 {
    for(int i=0; i<OrdersTotal(); i++)
    {
-      if(!OrderSelect(i, SELECT_BY_POS)) continue;
-      string sym; ulong magic; ENUM_ORDER_TYPE t; ulong ticket;
+      if(!OrderSelect(i, SELECT_BY_INDEX)) continue;
+      string sym; long magicL; long typeL; long ticketL;
       OrderGetString(ORDER_SYMBOL, sym);
-      OrderGetInteger(ORDER_MAGIC, magic);
-      OrderGetInteger(ORDER_TYPE, (long&)t);
-      OrderGetInteger(ORDER_TICKET, ticket);
+      OrderGetInteger(ORDER_MAGIC, magicL);
+      OrderGetInteger(ORDER_TYPE, typeL);
+      OrderGetInteger(ORDER_TICKET, ticketL);
+      ENUM_ORDER_TYPE t = (ENUM_ORDER_TYPE)typeL;
+      ulong magic = (ulong)magicL;
+      ulong ticket = (ulong)ticketL;
       if(sym == _Symbol && magic == (ulong)InpMagicNumber && t == type)
          return ticket;
    }
@@ -432,7 +441,7 @@ void EnsurePendingForZone(const OrderBlockZone &zone)
 
    if(existingTicket > 0)
    {
-      if(!OrderSelect(existingTicket)) return;
+      if(!OrderSelect((ulong)existingTicket)) return;
       double curPrice = OrderGetDouble(ORDER_PRICE_OPEN);
       double curSL    = OrderGetDouble(ORDER_SL);
       double curTP    = OrderGetDouble(ORDER_TP);
@@ -440,7 +449,7 @@ void EnsurePendingForZone(const OrderBlockZone &zone)
       bool needModify = (MathAbs(curPrice - entry) > 3*_Point) || (MathAbs(curSL - stop) > 3*_Point) || (MathAbs(curTP - tp) > 3*_Point) || (curExp != expiry);
       if(needModify)
       {
-         if(!trade.OrderModify(existingTicket, entry, stop, tp, expiry))
+         if(!trade.OrderModify((ulong)existingTicket, entry, stop, tp, expiry))
          {
             Print("Failed to modify pending order ", (long)existingTicket, " Err:", GetLastError());
             ResetLastError();
