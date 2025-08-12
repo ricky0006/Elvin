@@ -102,6 +102,7 @@ input int      InpMaxSlippagePoints           = 50;             // Maks slippage
 input bool     InpAllowBuy                    = true;           // Izinkan BUY
 input bool     InpAllowSell                   = true;           // Izinkan SELL
 input bool     InpOneEntryPerBar              = true;           // Batasi entry 1x tiap bar
+input bool     InpRestrictInitialEntry        = true;           // OP awal hanya 1 sampai clear (kecuali averaging/hedging yg aktif)
 
 //============================ Globals =========================================
 CTrade         g_trade;
@@ -459,6 +460,20 @@ double PointsToPrice(double points)
 }
 
 //=========================== Core Logic =======================================
+bool HasEAOpenPositions()
+{
+   int total = PositionsTotal();
+   for(int i=0;i<total;i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != g_symbol) continue;
+      if((long)PositionGetInteger(POSITION_MAGIC) != InpMagicNumber) continue;
+      return true; // ada posisi EA apapun (buy/sell/hedge)
+   }
+   return false;
+}
+
 void TryEntrySignals()
 {
    if(InpOneEntryPerBar)
@@ -466,6 +481,10 @@ void TryEntrySignals()
       datetime ct = iTime(g_symbol, InpSignalTimeframe, 0);
       if(ct == g_lastBarTime) return; // already processed
    }
+
+   // Restrict new base entries if there are existing EA positions
+   if(InpRestrictInitialEntry && HasEAOpenPositions())
+      return;
 
    double atrPoints; if(!GetATR(atrPoints)) return;
    if(atrPoints < InpMinATRPoints) return; // low volatility filter
