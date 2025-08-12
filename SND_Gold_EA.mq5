@@ -56,6 +56,11 @@ input double   InpHedgeTriggerDDPercent       = 5.0;            // Trigger hedge
 input double   InpHedgeLotRatioToNet          = 1.0;            // Lot hedge = ratio * |lotBuy-lotSell|
 input int      InpMaxHedgePositions           = 3;              // Maks posisi hedge
 
+enum HedgeTriggerMode { HEDGE_ACCOUNT_DD_PERCENT=0, HEDGE_CYCLE_FLOAT_MONEY=1, HEDGE_CYCLE_DD_PERCENT=2 };
+input HedgeTriggerMode InpHedgeTriggerMode    = HEDGE_CYCLE_DD_PERCENT; // Mode pemicu hedging
+input double   InpHedgeCycleTriggerMoney      = -100.0;         // Trigger hedge bila floating cycle <= nilai ini (uang akun)
+input double   InpHedgeCycleTriggerPercent    = 1.5;            // Trigger hedge bila |floating cycle| >= % equity
+
 // Hedge Unlock (otomatis keluar dari kondisi lock)
 input bool     InpEnableHedgeUnlock           = true;           // Aktifkan mekanisme unlock saat terkunci
 input double   InpLockLotTolerance            = 0.01;           // Toleransi selisih lot agar dianggap lock
@@ -426,13 +431,61 @@ int CountHedgePositions()
    int total = PositionsTotal();
    for(int i=0;i<total;i++)
    {
-      if(!PositionSelectByTicket(PositionGetTicket(i))) continue;
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
       if(PositionGetString(POSITION_SYMBOL) != g_symbol) continue;
       if((long)PositionGetInteger(POSITION_MAGIC) != InpMagicNumber) continue;
       string comment = PositionGetString(POSITION_COMMENT);
       if(StringFind(comment, "HEDGE", 0) >= 0) cnt++;
    }
    return cnt;
+}
+
+int CountHedgePositionsForCycle(int cycleId)
+{
+   int cnt = 0;
+   int total = PositionsTotal();
+   for(int i=0;i<total;i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != g_symbol) continue;
+      if((long)PositionGetInteger(POSITION_MAGIC) != InpMagicNumber) continue;
+      string comment = PositionGetString(POSITION_COMMENT);
+      if(StringFind(comment, "HEDGE", 0) >= 0)
+      {
+         int cyc = ExtractCycleFromComment(comment);
+         if(cyc == cycleId) cnt++;
+      }
+   }
+   return cnt;
+}
+
+bool ShouldHedgeForCycle(int cycleId)
+{
+   DirectionStats buyStats, sellStats; double totalFloating;
+   ComputeDirectionStatsForCycle(cycleId, buyStats, sellStats, totalFloating);
+   if(buyStats.positionsCount==0 && sellStats.positionsCount==0) return false;
+
+   if(InpHedgeTriggerMode == HEDGE_ACCOUNT_DD_PERCENT)
+   {
+      double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+      double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+      double ddPercent = (balance<=0) ? 0 : (MathMax(0.0, (balance - equity)) / balance * 100.0);
+      return (ddPercent >= InpHedgeTriggerDDPercent);
+   }
+   else if(InpHedgeTriggerMode == HEDGE_CYCLE_FLOAT_MONEY)
+   {
+      return (totalFloating <= InpHedgeCycleTriggerMoney);
+   }
+   else if(InpHedgeTriggerMode == HEDGE_CYCLE_DD_PERCENT)
+   {
+      double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+      if(equity <= 0) return false;
+      double ddPct = MathAbs(totalFloating) / equity * 100.0;
+      return (ddPct >= InpHedgeCycleTriggerPercent && totalFloating < 0);
+   }
+   return false;
 }
 
 //============================ Trade Helpers ==================================
@@ -963,33 +1016,30 @@ void ManageHedgeUnlock()
 void ManageHedge()
 {
    if(!InpEnableHedge) return;
-   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
-   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
-   double ddPercent = (balance<=0) ? 0 : (MathMax(0.0, (balance - equity)) / balance * 100.0);
+
+   // Use per-cycle trigger logic
+   if(!ShouldHedgeForCycle(g_cycleId)) return;
 
    DirectionStats buyStats, sellStats; double totalFloating;
    ComputeDirectionStatsForCycle(g_cycleId, buyStats, sellStats, totalFloating);
 
-   int hedgeCount = CountHedgePositions();
+   int hedgeCount = CountHedgePositionsForCycle(g_cycleId);
+   if(hedgeCount >= InpMaxHedgePositions) return;
 
-   if(ddPercent >= InpHedgeTriggerDDPercent && hedgeCount < InpMaxHedgePositions)
+   double netLot = MathAbs(buyStats.totalLots - sellStats.totalLots);
+   if(netLot <= 0.0) return;
+
+   double hedgeLot = NormalizeLot(MathMin(netLot * InpHedgeLotRatioToNet, InpMaxTotalLot));
+   if(hedgeLot <= 0.0) return;
+
+   // Hedge ke arah yang berlawanan dengan net exposure untuk cycle ini
+   if(buyStats.totalLots > sellStats.totalLots)
    {
-      double netLot = MathAbs(buyStats.totalLots - sellStats.totalLots);
-      if(netLot <= 0.0) return;
-
-      double hedgeLot = NormalizeLot(MathMin(netLot * InpHedgeLotRatioToNet, InpMaxTotalLot));
-      if(hedgeLot <= 0.0) return;
-
-      // Hedge ke arah yang berlawanan dengan net exposure
-      if(buyStats.totalLots > sellStats.totalLots)
-      {
-         // Net buy, buka sell hedge
-         OpenMarketOrder(ORDER_TYPE_SELL, hedgeLot, 0, 0, "HEDGE SELL");
-      }
-      else if(sellStats.totalLots > buyStats.totalLots)
-      {
-         OpenMarketOrder(ORDER_TYPE_BUY, hedgeLot, 0, 0, "HEDGE BUY");
-      }
+      OpenMarketOrder(ORDER_TYPE_SELL, hedgeLot, 0, 0, "HEDGE SELL");
+   }
+   else if(sellStats.totalLots > buyStats.totalLots)
+   {
+      OpenMarketOrder(ORDER_TYPE_BUY, hedgeLot, 0, 0, "HEDGE BUY");
    }
 }
 
