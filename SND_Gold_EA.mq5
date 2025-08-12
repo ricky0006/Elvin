@@ -50,6 +50,11 @@ input double   InpHedgeTriggerDDPercent       = 5.0;            // Trigger hedge
 input double   InpHedgeLotRatioToNet          = 1.0;            // Lot hedge = ratio * |lotBuy-lotSell|
 input int      InpMaxHedgePositions           = 3;              // Maks posisi hedge
 
+// Basket TP (TP Money All)
+input bool     InpEnableTPMoneyAll            = false;          // Aktifkan TP Money All (basket TP)
+input double   InpTPMoneyAllAmount            = 100.0;          // Target profit uang (mata uang akun)
+input bool     InpTPMoneyAllAllSymbols        = false;          // Hitung semua simbol dengan magic ini (true) atau hanya simbol EA (false)
+
 // Filters
 input int      InpMaxSpreadPoints             = 250;            // Maks spread (points)
 input int      InpMaxSlippagePoints           = 50;             // Maks slippage (points)
@@ -481,7 +486,6 @@ void ManageTrailingStops()
       if((long)PositionGetInteger(POSITION_MAGIC) != InpMagicNumber) continue;
 
       long type = PositionGetInteger(POSITION_TYPE);
-      double priceOpen = PositionGetDouble(POSITION_PRICE_OPEN);
       double sl        = PositionGetDouble(POSITION_SL);
       double tp        = PositionGetDouble(POSITION_TP);
 
@@ -490,10 +494,9 @@ void ManageTrailingStops()
       if(type == POSITION_TYPE_BUY)
       {
          double newSL = MathMax(sl, g_tick.bid - trailPriceDistance);
-         // Only modify if beneficial
          if(newSL > sl && newSL < g_tick.bid)
          {
-            g_trade.PositionModify(g_symbol, newSL, tp);
+            g_trade.PositionModify(ticket, newSL, tp);
          }
       }
       else if(type == POSITION_TYPE_SELL)
@@ -501,9 +504,52 @@ void ManageTrailingStops()
          double newSL = MathMin(sl==0?DBL_MAX:sl, g_tick.ask + trailPriceDistance);
          if((sl == 0 && newSL > g_tick.ask) || (sl != 0 && newSL < sl && newSL > g_tick.ask))
          {
-            g_trade.PositionModify(g_symbol, newSL, tp);
+            g_trade.PositionModify(ticket, newSL, tp);
          }
       }
+   }
+}
+
+//=========================== Basket TP (Money All) =============================
+double ComputeEAProfitBasket(bool allSymbols)
+{
+   double totalProfit = 0.0;
+   int total = PositionsTotal();
+   for(int i=0;i<total;i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if((long)PositionGetInteger(POSITION_MAGIC) != InpMagicNumber) continue;
+      string sym = PositionGetString(POSITION_SYMBOL);
+      if(!allSymbols && sym != g_symbol) continue;
+      totalProfit += PositionGetDouble(POSITION_PROFIT);
+   }
+   return totalProfit;
+}
+
+void CloseEAPositionsBasket(bool allSymbols)
+{
+   // Close from last to first to avoid reindexing surprises
+   for(int i=PositionsTotal()-1; i>=0; --i)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if((long)PositionGetInteger(POSITION_MAGIC) != InpMagicNumber) continue;
+      string sym = PositionGetString(POSITION_SYMBOL);
+      if(!allSymbols && sym != g_symbol) continue;
+      g_trade.SetExpertMagicNumber(InpMagicNumber);
+      g_trade.SetDeviationInPoints(InpMaxSlippagePoints);
+      g_trade.PositionClose(ticket);
+   }
+}
+
+void ManageTPMoneyAll()
+{
+   if(!InpEnableTPMoneyAll) return;
+   double pf = ComputeEAProfitBasket(InpTPMoneyAllAllSymbols);
+   if(pf >= InpTPMoneyAllAmount)
+   {
+      CloseEAPositionsBasket(InpTPMoneyAllAllSymbols);
    }
 }
 
@@ -679,6 +725,9 @@ void OnTimer()
 void OnTick()
 {
    if(_Symbol != g_symbol) return; // attached chart symbol changed
+
+   // Basket TP check first to avoid opening new trades on the same tick
+   ManageTPMoneyAll();
 
    // Core pipeline
    TryEntrySignals();
