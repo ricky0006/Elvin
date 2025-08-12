@@ -42,6 +42,11 @@ input int      InpMaxPositionsPerDirection    = 10;             // Batas posisi 
 input bool     InpUseATRGridStep              = true;           // Grid step berbasis ATR
 input int      InpGridStepPoints              = 300;            // Grid step (points) jika tidak pakai ATR
 input double   InpGridATRMultiplier           = 0.25;           // Grid step = ATR * multiplier
+// Profit-based Averaging (scale-in)
+input bool     InpEnableProfitAveraging       = true;           // Tambah posisi saat profit (scale-in)
+input bool     InpProfitGridUseATR            = true;           // Step profit berbasis ATR
+input int      InpProfitGridStepPoints        = 300;            // Step profit (points) jika tidak pakai ATR
+input double   InpProfitGridATRMultiplier     = 0.30;           // Step profit = ATR * multiplier
 
 // SL/TP & Exits
 input bool     InpUseSLTP                     = true;           // Gunakan SL/TP dinamis
@@ -721,6 +726,7 @@ void ManageAveraging()
 {
    double atrPoints; if(!GetATR(atrPoints)) return;
    double stepPts = InpUseATRGridStep ? MathMax(1.0, atrPoints * InpGridATRMultiplier) : InpGridStepPoints;
+   double stepPtsProfit = InpEnableProfitAveraging ? (InpProfitGridUseATR ? MathMax(1.0, atrPoints * InpProfitGridATRMultiplier) : InpProfitGridStepPoints) : 0.0;
 
    DirectionStats buyStats, sellStats; double totalFloating;
    ComputeDirectionStatsForCycle(g_cycleId, buyStats, sellStats, totalFloating);
@@ -731,7 +737,7 @@ void ManageAveraging()
 
    double lotBudgetLeft = MathMax(0.0, InpMaxTotalLot - (buyStats.totalLots + sellStats.totalLots));
 
-   // Averaging BUY: add when price goes further down by step from last buy open price
+   // Averaging BUY: add when price goes further down by step from last buy open price (adverse)
    if(InpAllowBuy && buyStats.positionsCount > 0 && buyStats.positionsCount < InpMaxPositionsPerDirection && lotBudgetLeft > 0)
    {
       double referencePrice = buyStats.lastOpenPrice; // most recent entry
@@ -751,10 +757,34 @@ void ManageAveraging()
             tp = bid + PointsToPrice(tpPts);
          }
          OpenMarketOrder(ORDER_TYPE_BUY, nextLot, sl, tp, "AVG BUY");
+         // refresh budget
+         lotBudgetLeft = MathMax(0.0, InpMaxTotalLot - (buyStats.totalLots + sellStats.totalLots + nextLot));
+      }
+
+      // Profit-based scale-in for BUY
+      if(InpEnableProfitAveraging && stepPtsProfit > 0.0 && lotBudgetLeft > 0)
+      {
+         double profitMovePts = PriceToPoints(bid - referencePrice);
+         if(profitMovePts >= stepPtsProfit)
+         {
+            double nextLot = InpUseLotMultiplier ? (InpInitialLot * MathPow(InpLotMultiplier, buyStats.positionsCount))
+                                                 : InpInitialLot;
+            nextLot = MathMin(nextLot, lotBudgetLeft);
+
+            double sl=0,tp=0;
+            if(InpUseSLTP)
+            {
+               double slPts = atrPoints * InpSL_ATRMult;
+               double tpPts = atrPoints * InpTP_ATRMult;
+               sl = bid - PointsToPrice(slPts);
+               tp = bid + PointsToPrice(tpPts);
+            }
+            OpenMarketOrder(ORDER_TYPE_BUY, nextLot, sl, tp, "SCALE BUY");
+         }
       }
    }
 
-   // Averaging SELL: add when price goes further up by step from last sell open price
+   // Averaging SELL: add when price goes further up by step from last sell open price (adverse)
    if(InpAllowSell && sellStats.positionsCount > 0 && sellStats.positionsCount < InpMaxPositionsPerDirection && lotBudgetLeft > 0)
    {
       double referencePrice = sellStats.lastOpenPrice;
@@ -774,6 +804,30 @@ void ManageAveraging()
             tp = ask - PointsToPrice(tpPts);
          }
          OpenMarketOrder(ORDER_TYPE_SELL, nextLot, sl, tp, "AVG SELL");
+         // refresh budget
+         lotBudgetLeft = MathMax(0.0, InpMaxTotalLot - (buyStats.totalLots + sellStats.totalLots + nextLot));
+      }
+
+      // Profit-based scale-in for SELL
+      if(InpEnableProfitAveraging && stepPtsProfit > 0.0 && lotBudgetLeft > 0)
+      {
+         double profitMovePts = PriceToPoints(referencePrice - bid);
+         if(profitMovePts >= stepPtsProfit)
+         {
+            double nextLot = InpUseLotMultiplier ? (InpInitialLot * MathPow(InpLotMultiplier, sellStats.positionsCount))
+                                                 : InpInitialLot;
+            nextLot = MathMin(nextLot, lotBudgetLeft);
+
+            double sl=0,tp=0;
+            if(InpUseSLTP)
+            {
+               double slPts = atrPoints * InpSL_ATRMult;
+               double tpPts = atrPoints * InpTP_ATRMult;
+               sl = ask + PointsToPrice(slPts);
+               tp = ask - PointsToPrice(tpPts);
+            }
+            OpenMarketOrder(ORDER_TYPE_SELL, nextLot, sl, tp, "SCALE SELL");
+         }
       }
    }
 }
