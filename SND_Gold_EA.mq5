@@ -56,6 +56,27 @@ input double   InpHedgeTriggerDDPercent       = 5.0;            // Trigger hedge
 input double   InpHedgeLotRatioToNet          = 1.0;            // Lot hedge = ratio * |lotBuy-lotSell|
 input int      InpMaxHedgePositions           = 3;              // Maks posisi hedge
 
+// Hedge Unlock (otomatis keluar dari kondisi lock)
+input bool     InpEnableHedgeUnlock           = true;           // Aktifkan mekanisme unlock saat terkunci
+input double   InpLockLotTolerance            = 0.01;           // Toleransi selisih lot agar dianggap lock
+// Dynamic TP unlock
+input bool     InpUnlockUseDynamicTP          = true;           // Gunakan TP dinamis berbasis ATR
+input double   InpUnlockK_ATRProfit           = 0.6;            // Koefisien target profit dinamis (k)
+input double   InpUnlockEquityCapPercent      = 0.4;            // Batas % equity untuk target profit (ambil lebih kecil)
+// Midline break-even unlock
+input bool     InpUnlockUseMidline            = true;           // Unlock saat harga kembali ke midpoint
+input double   InpUnlockMidlineBufferATR      = 0.12;           // Buffer BE = ATR * mult
+input int      InpUnlockMinLockBars           = 45;             // Minimum bar dalam kondisi lock sebelum midline unlock
+// Partial release (opsional)
+input bool     InpUnlockPartialEnabled        = false;          // Lepas sisi profit sebagian
+input double   InpUnlockPartialATRMult        = 0.25;           // Ambang profit sisi = ATR * mult * lotSide
+// Fail-safe time unlock
+input int      InpUnlockFailSafeBars          = 100;            // Paksa unlock bila lock terlalu lama
+input double   InpUnlockFailSafeAllowLoss     = -10.0;          // Batas loss (uang) yang masih diterima saat fail-safe
+// Volatility gate
+input bool     InpUnlockVolGateEnabled        = true;           // Hanya unlock saat volatilitas memadai
+input double   InpUnlockVolGateATRRatio       = 1.2;            // ATR_now >= ratio * ATR_SMA(20)
+
 // Basket TP (TP Money All)
 input bool     InpEnableTPMoneyAll            = false;          // Aktifkan TP Money All (basket TP)
 input double   InpTPMoneyAllAmount            = 100.0;          // Target profit uang (mata uang akun)
@@ -345,12 +366,14 @@ struct DirectionStats
    double totalProfit;
    double worstPrice;   // worst price for averaging reference
    double lastOpenPrice;// most recent open price in that direction
+   double sumPriceVolume; // sum(price_open * volume)
+   double avgOpenPrice;   // volume-weighted average open price
 };
 
 void ComputeDirectionStats(DirectionStats &buyStats, DirectionStats &sellStats, double &totalFloating)
 {
-   buyStats.totalLots = 0; buyStats.positionsCount = 0; buyStats.totalProfit = 0; buyStats.worstPrice = 0; buyStats.lastOpenPrice = 0;
-   sellStats.totalLots = 0; sellStats.positionsCount = 0; sellStats.totalProfit = 0; sellStats.worstPrice = 0; sellStats.lastOpenPrice = 0;
+   buyStats.totalLots = 0; buyStats.positionsCount = 0; buyStats.totalProfit = 0; buyStats.worstPrice = 0; buyStats.lastOpenPrice = 0; buyStats.sumPriceVolume=0; buyStats.avgOpenPrice=0;
+   sellStats.totalLots = 0; sellStats.positionsCount = 0; sellStats.totalProfit = 0; sellStats.worstPrice = 0; sellStats.lastOpenPrice = 0; sellStats.sumPriceVolume=0; sellStats.avgOpenPrice=0;
    totalFloating = 0;
 
    int total = PositionsTotal();
@@ -375,6 +398,7 @@ void ComputeDirectionStats(DirectionStats &buyStats, DirectionStats &sellStats, 
          buyStats.positionsCount++;
          buyStats.totalProfit += profit;
          buyStats.lastOpenPrice = price;
+         buyStats.sumPriceVolume += price * volume;
          if(buyStats.worstPrice == 0 || price > buyStats.worstPrice) buyStats.worstPrice = price; // worst for buy is highest
       }
       else if(type == POSITION_TYPE_SELL)
@@ -383,9 +407,12 @@ void ComputeDirectionStats(DirectionStats &buyStats, DirectionStats &sellStats, 
          sellStats.positionsCount++;
          sellStats.totalProfit += profit;
          sellStats.lastOpenPrice = price;
+         sellStats.sumPriceVolume += price * volume;
          if(sellStats.worstPrice == 0 || price < sellStats.worstPrice) sellStats.worstPrice = price; // worst for sell is lowest
       }
    }
+   if(buyStats.totalLots > 0) buyStats.avgOpenPrice = buyStats.sumPriceVolume / buyStats.totalLots;
+   if(sellStats.totalLots > 0) sellStats.avgOpenPrice = sellStats.sumPriceVolume / sellStats.totalLots;
 }
 
 int CountHedgePositions()
@@ -648,35 +675,153 @@ void ManageTPMoneyAll()
    }
 }
 
-void ManageHedge()
+//=========================== Hedge Unlock =====================================
+datetime g_lockStartTime = 0;
+
+bool IsLocked(const DirectionStats &buyStats, const DirectionStats &sellStats)
 {
-   if(!InpEnableHedge) return;
-   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
-   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
-   double ddPercent = (balance<=0) ? 0 : (MathMax(0.0, (balance - equity)) / balance * 100.0);
+   if(buyStats.positionsCount <= 0 || sellStats.positionsCount <= 0) return false;
+   double diff = MathAbs(buyStats.totalLots - sellStats.totalLots);
+   return (diff <= InpLockLotTolerance);
+}
+
+void UpdateLockTimer(const DirectionStats &buyStats, const DirectionStats &sellStats)
+{
+   bool locked = IsLocked(buyStats, sellStats);
+   if(locked)
+   {
+      if(g_lockStartTime == 0) g_lockStartTime = TimeCurrent();
+   }
+   else
+   {
+      g_lockStartTime = 0;
+   }
+}
+
+int BarsSince(datetime t)
+{
+   if(t == 0) return 0;
+   datetime nowBar = iTime(g_symbol, InpSignalTimeframe, 0);
+   if(nowBar <= 0) return 0;
+   int count = 0;
+   for(int i=0; ; ++i)
+   {
+      datetime ti = iTime(g_symbol, InpSignalTimeframe, i);
+      if(ti <= 0 || ti < t) break;
+      count++;
+      if(count > 10000) break;
+   }
+   return count;
+}
+
+double GetATRSMA(int period)
+{
+   if(!EnsureIndicators()) return 0.0;
+   int cnt = MathMax(1, period);
+   double buff[];
+   if(CopyBuffer(g_handleATR, 0, 0, cnt, buff) < cnt) return 0.0;
+   double sum=0.0; for(int i=0;i<cnt;i++) sum += buff[i];
+   return sum/cnt;
+}
+
+void CloseSidePositions(int positionType) // POSITION_TYPE_BUY / POSITION_TYPE_SELL
+{
+   for(int i=PositionsTotal()-1; i>=0; --i)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != g_symbol) continue;
+      if((long)PositionGetInteger(POSITION_MAGIC) != InpMagicNumber) continue;
+      if((int)PositionGetInteger(POSITION_TYPE) != positionType) continue;
+      g_trade.SetExpertMagicNumber(InpMagicNumber);
+      g_trade.SetDeviationInPoints(InpMaxSlippagePoints);
+      g_trade.PositionClose(ticket);
+   }
+}
+
+void ManageHedgeUnlock()
+{
+   if(!InpEnableHedgeUnlock) return;
 
    DirectionStats buyStats, sellStats; double totalFloating;
    ComputeDirectionStats(buyStats, sellStats, totalFloating);
+   UpdateLockTimer(buyStats, sellStats);
 
-   int hedgeCount = CountHedgePositions();
+   if(!IsLocked(buyStats, sellStats)) return;
 
-   if(ddPercent >= InpHedgeTriggerDDPercent && hedgeCount < InpMaxHedgePositions)
+   // Volatility gate
+   if(InpUnlockVolGateEnabled)
    {
-      double netLot = MathAbs(buyStats.totalLots - sellStats.totalLots);
-      if(netLot <= 0.0) return;
+      double atrNowPts; if(!GetATR(atrNowPts)) return;
+      double atrNowPrice = PointsToPrice(atrNowPts);
+      double atrSMA = GetATRSMA(20);
+      if(atrSMA <= 0) return;
+      if((atrNowPrice) < (PointsToPrice(atrSMA) * InpUnlockVolGateATRRatio)) return;
+   }
 
-      double hedgeLot = NormalizeLot(MathMin(netLot * InpHedgeLotRatioToNet, InpMaxTotalLot));
-      if(hedgeLot <= 0.0) return;
+   // Compute dynamic target in currency
+   double atrPts; if(!GetATR(atrPts)) return;
+   double priceMove = PointsToPrice(atrPts);
+   double ticks = (g_tickSize > 0 ? priceMove / g_tickSize : 0);
+   double lotBase = (buyStats.totalLots + sellStats.totalLots) * 0.5;
+   double dynTarget = InpUnlockK_ATRProfit * ticks * g_tickValue * lotBase;
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double equityCap = equity * (InpUnlockEquityCapPercent/100.0);
+   double targetUnlock = MathMax(0.0, MathMin(dynTarget, equityCap));
 
-      // Hedge ke arah yang berlawanan dengan net exposure
-      if(buyStats.totalLots > sellStats.totalLots)
+   // 1) Dynamic TP unlock
+   if(InpUnlockUseDynamicTP && totalFloating >= targetUnlock && targetUnlock > 0.0)
+   {
+      CloseEAPositionsBasket(false);
+      return;
+   }
+
+   int barsLocked = BarsSince(g_lockStartTime);
+
+   // 2) Midline break-even unlock after min bars
+   if(InpUnlockUseMidline && barsLocked >= InpUnlockMinLockBars)
+   {
+      if(!RefreshTick()) return;
+      double bid=g_tick.bid, ask=g_tick.ask; double mid=(bid+ask)/2.0;
+      double avgBuy = buyStats.avgOpenPrice;
+      double avgSell = sellStats.avgOpenPrice;
+      if(avgBuy>0.0 && avgSell>0.0)
       {
-         // Net buy, buka sell hedge
-         OpenMarketOrder(ORDER_TYPE_SELL, hedgeLot, 0, 0, "HEDGE SELL");
+         double midline = (avgBuy + avgSell)/2.0;
+         double buffer  = PointsToPrice(atrPts * InpUnlockMidlineBufferATR);
+         if(MathAbs(mid - midline) <= buffer)
+         {
+            CloseEAPositionsBasket(false);
+            return;
+         }
       }
-      else if(sellStats.totalLots > buyStats.totalLots)
+   }
+
+   // 3) Partial release (optional)
+   if(InpUnlockPartialEnabled)
+   {
+      double partThresh = ticks * g_tickValue * InpUnlockPartialATRMult; // per 1 lot
+      if(buyStats.totalLots>0 && buyStats.totalProfit >= partThresh*buyStats.totalLots)
       {
-         OpenMarketOrder(ORDER_TYPE_BUY, hedgeLot, 0, 0, "HEDGE BUY");
+         CloseSidePositions(POSITION_TYPE_BUY);
+         return;
+      }
+      if(sellStats.totalLots>0 && sellStats.totalProfit >= partThresh*sellStats.totalLots)
+      {
+         CloseSidePositions(POSITION_TYPE_SELL);
+         return;
+      }
+   }
+
+   // 4) Fail-safe time unlock
+   if(barsLocked >= InpUnlockFailSafeBars)
+   {
+      double allowLoss = InpUnlockFailSafeAllowLoss;
+      // If allowLoss is negative, it is a permissible loss threshold (e.g., -10)
+      if(totalFloating >= allowLoss)
+      {
+         CloseEAPositionsBasket(false);
+         return;
       }
    }
 }
@@ -905,6 +1050,9 @@ void OnTick()
 
    // Basket TP check first to avoid opening new trades on the same tick
    ManageTPMoneyAll();
+
+   // Unlock management when hedged/locked
+   ManageHedgeUnlock();
 
    // Core pipeline
    TryEntrySignals();
