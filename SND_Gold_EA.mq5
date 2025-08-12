@@ -85,6 +85,7 @@ bool           g_initialized = false;
 
 // Label IDs
 string         g_labelPrefix = "SND_GOLD_EA_DASH_";
+string         g_zonePrefix  = "SND_GOLD_EA_ZONE_";
 
 //============================ Utilities =======================================
 double NormalizeLot(double lots)
@@ -679,6 +680,80 @@ void ClearDashboard()
    }
 }
 
+//============================== SND Zones =====================================
+void DrawOrUpdateZoneRect(const string name, datetime t1, datetime t2, double priceLow, double priceHigh, color clr)
+{
+   string objName = g_zonePrefix + name;
+   if(ObjectFind(0, objName) == -1)
+   {
+      ObjectCreate(0, objName, OBJ_RECTANGLE, 0, t1, priceLow, t2, priceHigh);
+      ObjectSetInteger(0, objName, OBJPROP_BACK, true);
+      ObjectSetInteger(0, objName, OBJPROP_WIDTH, 2);
+      ObjectSetInteger(0, objName, OBJPROP_COLOR, clr);
+   }
+   else
+   {
+      ObjectSetInteger(0, objName, OBJPROP_BACK, true);
+      ObjectSetInteger(0, objName, OBJPROP_WIDTH, 2);
+      ObjectSetInteger(0, objName, OBJPROP_COLOR, clr);
+      ObjectMove(0, objName, 0, t1, priceLow);
+      ObjectMove(0, objName, 1, t2, priceHigh);
+   }
+}
+
+void DeleteZoneRect(const string name)
+{
+   string objName = g_zonePrefix + name;
+   if(ObjectFind(0, objName) != -1)
+      ObjectDelete(0, objName);
+}
+
+void UpdateSNDZones()
+{
+   double atrPoints; if(!GetATR(atrPoints)) { DeleteZoneRect("SUPPLY"); DeleteZoneRect("DEMAND"); return; }
+   double upFractal=0, dnFractal=0; if(!GetLastFractals(upFractal, dnFractal)) { DeleteZoneRect("SUPPLY"); DeleteZoneRect("DEMAND"); return; }
+   double zoneHalfWidthPts = MathMax(1.0, atrPoints * InpZoneATRMultiplier);
+
+   // Timespan for rectangles: from ~200 bars ago to a bit into the future
+   datetime tRight = TimeCurrent() + (datetime)(PeriodSeconds(InpSignalTimeframe) * 20);
+   datetime tLeft  = iTime(g_symbol, InpSignalTimeframe, 200);
+   if(tLeft == 0) tLeft = TimeCurrent() - (datetime)(PeriodSeconds(InpSignalTimeframe) * 200);
+
+   if(upFractal > 0.0)
+   {
+      double lower = upFractal - PointsToPrice(zoneHalfWidthPts);
+      double upper = upFractal + PointsToPrice(zoneHalfWidthPts);
+      DrawOrUpdateZoneRect("SUPPLY", tLeft, tRight, lower, upper, clrTomato);
+   }
+   else
+   {
+      DeleteZoneRect("SUPPLY");
+   }
+
+   if(dnFractal > 0.0)
+   {
+      double lower = dnFractal - PointsToPrice(zoneHalfWidthPts);
+      double upper = dnFractal + PointsToPrice(zoneHalfWidthPts);
+      DrawOrUpdateZoneRect("DEMAND", tLeft, tRight, lower, upper, clrLimeGreen);
+   }
+   else
+   {
+      DeleteZoneRect("DEMAND");
+   }
+}
+
+void ClearZones()
+{
+   // delete all objects with prefix
+   int total = ObjectsTotal(0, -1, -1);
+   for(int i=total-1; i>=0; --i)
+   {
+      string name = ObjectName(0, i);
+      if(StringFind(name, g_zonePrefix, 0) == 0)
+         ObjectDelete(0, name);
+   }
+}
+
 //============================= Lifecycle =====================================
 int OnInit()
 {
@@ -714,12 +789,14 @@ void OnDeinit(const int reason)
 {
    EventKillTimer();
    ClearDashboard();
+   ClearZones();
 }
 
 void OnTimer()
 {
    // Management that does not require every tick
    UpdateDashboard();
+   UpdateSNDZones();
 }
 
 void OnTick()
@@ -735,8 +812,9 @@ void OnTick()
    ManageTrailingStops();
    ManageHedge();
 
-   // Dashboard refresh also here for responsiveness
+   // Dashboard + Zones refresh
    UpdateDashboard();
+   UpdateSNDZones();
 }
 
 //+------------------------------------------------------------------+
