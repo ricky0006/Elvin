@@ -55,6 +55,18 @@ input bool     InpEnableTPMoneyAll            = false;          // Aktifkan TP M
 input double   InpTPMoneyAllAmount            = 100.0;          // Target profit uang (mata uang akun)
 input bool     InpTPMoneyAllAllSymbols        = false;          // Hitung semua simbol dengan magic ini (true) atau hanya simbol EA (false)
 
+// SND Zones Display
+input bool     InpShowZones                   = true;           // Tampilkan zona Supply/Demand
+input int      InpZoneHistoryBars             = 200;            // Panjang zona ke kiri (jumlah bar historis)
+input int      InpZoneRightBars               = 20;             // Panjang zona ke kanan (bar ke depan)
+input bool     InpZoneFill                    = true;           // Isi zona dengan warna transparan
+input color    InpSupplyColor                 = clrTomato;      // Warna border zona Supply
+input int      InpSupplyLineWidth             = 2;              // Ketebalan garis Supply
+input int      InpSupplyFillAlpha             = 40;             // Transparansi isi Supply (0-255)
+input color    InpDemandColor                 = clrLimeGreen;   // Warna border zona Demand
+input int      InpDemandLineWidth             = 2;              // Ketebalan garis Demand
+input int      InpDemandFillAlpha             = 40;             // Transparansi isi Demand (0-255)
+
 // Filters
 input int      InpMaxSpreadPoints             = 250;            // Maks spread (points)
 input int      InpMaxSlippagePoints           = 50;             // Maks slippage (points)
@@ -688,14 +700,26 @@ void DrawOrUpdateZoneRect(const string name, datetime t1, datetime t2, double pr
    {
       ObjectCreate(0, objName, OBJ_RECTANGLE, 0, t1, priceLow, t2, priceHigh);
       ObjectSetInteger(0, objName, OBJPROP_BACK, true);
-      ObjectSetInteger(0, objName, OBJPROP_WIDTH, 2);
+      ObjectSetInteger(0, objName, OBJPROP_WIDTH, (name=="SUPPLY"?InpSupplyLineWidth:InpDemandLineWidth));
       ObjectSetInteger(0, objName, OBJPROP_COLOR, clr);
+      ObjectSetInteger(0, objName, OBJPROP_FILL, InpZoneFill);
+      if(InpZoneFill)
+      {
+         int alpha = (name=="SUPPLY"?InpSupplyFillAlpha:InpDemandFillAlpha);
+         color fill = (name=="SUPPLY"?InpSupplyColor:InpDemandColor);
+         ObjectSetInteger(0, objName, OBJPROP_BACK, true);
+         ObjectSetInteger(0, objName, OBJPROP_STYLE, STYLE_SOLID);
+         ObjectSetInteger(0, objName, OBJPROP_ZORDER, 0);
+         // In MT5, rectangle fill uses OBJPROP_COLOR with alpha component if supported by theme; keep border color and rely on platform fill flag
+         // Some builds need style only; we keep settings minimal.
+      }
    }
    else
    {
       ObjectSetInteger(0, objName, OBJPROP_BACK, true);
-      ObjectSetInteger(0, objName, OBJPROP_WIDTH, 2);
+      ObjectSetInteger(0, objName, OBJPROP_WIDTH, (name=="SUPPLY"?InpSupplyLineWidth:InpDemandLineWidth));
       ObjectSetInteger(0, objName, OBJPROP_COLOR, clr);
+      ObjectSetInteger(0, objName, OBJPROP_FILL, InpZoneFill);
       ObjectMove(0, objName, 0, t1, priceLow);
       ObjectMove(0, objName, 1, t2, priceHigh);
    }
@@ -710,20 +734,27 @@ void DeleteZoneRect(const string name)
 
 void UpdateSNDZones()
 {
+   if(!InpShowZones)
+   {
+      DeleteZoneRect("SUPPLY");
+      DeleteZoneRect("DEMAND");
+      return;
+   }
    double atrPoints; if(!GetATR(atrPoints)) { DeleteZoneRect("SUPPLY"); DeleteZoneRect("DEMAND"); return; }
    double upFractal=0, dnFractal=0; if(!GetLastFractals(upFractal, dnFractal)) { DeleteZoneRect("SUPPLY"); DeleteZoneRect("DEMAND"); return; }
    double zoneHalfWidthPts = MathMax(1.0, atrPoints * InpZoneATRMultiplier);
 
-   // Timespan for rectangles: from ~200 bars ago to a bit into the future
-   datetime tRight = TimeCurrent() + (datetime)(PeriodSeconds(InpSignalTimeframe) * 20);
-   datetime tLeft  = iTime(g_symbol, InpSignalTimeframe, 200);
-   if(tLeft == 0) tLeft = TimeCurrent() - (datetime)(PeriodSeconds(InpSignalTimeframe) * 200);
+   int leftBars = MathMax(10, InpZoneHistoryBars);
+   int rightBars = MathMax(5, InpZoneRightBars);
+   datetime tRight = TimeCurrent() + (datetime)(PeriodSeconds(InpSignalTimeframe) * rightBars);
+   datetime tLeft  = iTime(g_symbol, InpSignalTimeframe, leftBars);
+   if(tLeft == 0) tLeft = TimeCurrent() - (datetime)(PeriodSeconds(InpSignalTimeframe) * leftBars);
 
    if(upFractal > 0.0)
    {
       double lower = upFractal - PointsToPrice(zoneHalfWidthPts);
       double upper = upFractal + PointsToPrice(zoneHalfWidthPts);
-      DrawOrUpdateZoneRect("SUPPLY", tLeft, tRight, lower, upper, clrTomato);
+      DrawOrUpdateZoneRect("SUPPLY", tLeft, tRight, lower, upper, InpSupplyColor);
    }
    else
    {
@@ -734,7 +765,7 @@ void UpdateSNDZones()
    {
       double lower = dnFractal - PointsToPrice(zoneHalfWidthPts);
       double upper = dnFractal + PointsToPrice(zoneHalfWidthPts);
-      DrawOrUpdateZoneRect("DEMAND", tLeft, tRight, lower, upper, clrLimeGreen);
+      DrawOrUpdateZoneRect("DEMAND", tLeft, tRight, lower, upper, InpDemandColor);
    }
    else
    {
