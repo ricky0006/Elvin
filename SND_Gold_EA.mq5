@@ -826,6 +826,40 @@ void ManageHedgeUnlock()
    }
 }
 
+// Keep standard hedging in place
+void ManageHedge()
+{
+   if(!InpEnableHedge) return;
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double ddPercent = (balance<=0) ? 0 : (MathMax(0.0, (balance - equity)) / balance * 100.0);
+
+   DirectionStats buyStats, sellStats; double totalFloating;
+   ComputeDirectionStats(buyStats, sellStats, totalFloating);
+
+   int hedgeCount = CountHedgePositions();
+
+   if(ddPercent >= InpHedgeTriggerDDPercent && hedgeCount < InpMaxHedgePositions)
+   {
+      double netLot = MathAbs(buyStats.totalLots - sellStats.totalLots);
+      if(netLot <= 0.0) return;
+
+      double hedgeLot = NormalizeLot(MathMin(netLot * InpHedgeLotRatioToNet, InpMaxTotalLot));
+      if(hedgeLot <= 0.0) return;
+
+      // Hedge ke arah yang berlawanan dengan net exposure
+      if(buyStats.totalLots > sellStats.totalLots)
+      {
+         // Net buy, buka sell hedge
+         OpenMarketOrder(ORDER_TYPE_SELL, hedgeLot, 0, 0, "HEDGE SELL");
+      }
+      else if(sellStats.totalLots > buyStats.totalLots)
+      {
+         OpenMarketOrder(ORDER_TYPE_BUY, hedgeLot, 0, 0, "HEDGE BUY");
+      }
+   }
+}
+
 //============================== Dashboard =====================================
 void CreateOrUpdateLabel(const string name, const string text, int corner, int xOffset, int yOffset, color clr)
 {
