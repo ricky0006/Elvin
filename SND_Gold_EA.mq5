@@ -25,6 +25,12 @@ input double   InpMinATRPoints                = 100;            // Minimum ATR (
 input bool     InpUsePinBarRejection          = true;           // Konfirmasi candle pin bar
 input bool     InpUseEngulfingRejection       = true;           // Konfirmasi candle engulfing
 
+enum ZoneRuleMode { ZONE_FRACTAL_ATR=0, ZONE_PIVOT_HL=1, ZONE_ORDER_BLOCK=2 };
+input ZoneRuleMode InpZoneRule                = ZONE_FRACTAL_ATR; // Mode perhitungan zona SND
+input int      InpZoneLookupBars              = 300;            // Maks bar untuk cari zona
+input int      InpPivotLeftRight              = 3;              // Pivot HL: jumlah bar kiri/kanan
+input double   InpOBPadATRMult                = 0.0;            // Order Block: padding zona = ATR * mult
+
 // Risk & Positioning
 input double   InpInitialLot                  = 0.01;           // Lot awal
 input bool     InpUseLotMultiplier            = true;           // Gunakan martingale lot multiplier untuk averaging
@@ -168,6 +174,96 @@ bool GetLastFractals(double &lastUpPrice, double &lastDownPrice)
       if(dnBuff[i] != 0.0) { lastDownPrice = dnBuff[i]; break; }
    }
    return (lastUpPrice>0.0 || lastDownPrice>0.0);
+}
+
+bool FindLastPivotHighLow(int leftRight, int lookbackBars, double &pivotHigh, double &pivotLow)
+{
+   pivotHigh = 0.0; pivotLow = 0.0;
+   int maxShift = MathMax(leftRight+1, MathMin(lookbackBars, 1000));
+   // search from most recent past candle
+   for(int shift=leftRight+1; shift<=maxShift; ++shift)
+   {
+      bool isHigh = true; bool isLow = true;
+      double h = iHigh(g_symbol, InpSignalTimeframe, shift);
+      double l = iLow(g_symbol, InpSignalTimeframe, shift);
+      if(h == 0 || l == 0) continue;
+      for(int k=1; k<=leftRight; ++k)
+      {
+         double hk = iHigh(g_symbol, InpSignalTimeframe, shift-k);
+         double hl = iHigh(g_symbol, InpSignalTimeframe, shift+k);
+         if(!(h > hk && h > hl)) isHigh = false;
+
+         double lk = iLow(g_symbol, InpSignalTimeframe, shift-k);
+         double ll = iLow(g_symbol, InpSignalTimeframe, shift+k);
+         if(!(l < lk && l < ll)) isLow = false;
+
+         if(!isHigh && !isLow) break;
+      }
+      if(pivotHigh==0.0 && isHigh) pivotHigh = h;
+      if(pivotLow==0.0 && isLow) pivotLow = l;
+      if(pivotHigh>0.0 && pivotLow>0.0) break;
+   }
+   return (pivotHigh>0.0 || pivotLow>0.0);
+}
+
+bool FindLastOrderBlocks(int lookbackBars, double &supplyLow, double &supplyHigh, double &demandLow, double &demandHigh)
+{
+   supplyLow = supplyHigh = demandLow = demandHigh = 0.0;
+   int maxShift = MathMin(lookbackBars, 1000);
+   // Supply: last bearish engulfing body
+   for(int shift=1; shift<=maxShift; ++shift)
+   {
+      if(IsBearishEngulfing(shift))
+      {
+         double o,h,l,c; GetCandle(shift,o,h,l,c);
+         supplyLow = MathMin(o,c);
+         supplyHigh = MathMax(o,c);
+         break;
+      }
+   }
+   // Demand: last bullish engulfing body
+   for(int shift=1; shift<=maxShift; ++shift)
+   {
+      if(IsBullishEngulfing(shift))
+      {
+         double o,h,l,c; GetCandle(shift,o,h,l,c);
+         demandLow = MathMin(o,c);
+         demandHigh = MathMax(o,c);
+         break;
+      }
+   }
+   return (supplyHigh>0.0 || demandHigh>0.0);
+}
+
+bool ComputeZones(double &supLow, double &supHigh, double &demLow, double &demHigh)
+{
+   supLow=supHigh=demLow=demHigh=0.0;
+   double atrPts; if(!GetATR(atrPts)) return false;
+   double padPrice = PointsToPrice(atrPts * InpZoneATRMultiplier);
+
+   if(InpZoneRule == ZONE_FRACTAL_ATR)
+   {
+     double upF=0, dnF=0; if(!GetLastFractals(upF, dnF)) return false;
+     if(upF>0){ supLow = upF - padPrice; supHigh = upF + padPrice; }
+     if(dnF>0){ demLow = dnF - padPrice; demHigh = dnF + padPrice; }
+     return (supHigh>0.0 || demHigh>0.0);
+   }
+   else if(InpZoneRule == ZONE_PIVOT_HL)
+   {
+     double ph=0, pl=0; if(!FindLastPivotHighLow(InpPivotLeftRight, InpZoneLookupBars, ph, pl)) return false;
+     if(ph>0){ supLow = ph - padPrice; supHigh = ph + padPrice; }
+     if(pl>0){ demLow = pl - padPrice; demHigh = pl + padPrice; }
+     return (supHigh>0.0 || demHigh>0.0);
+   }
+   else if(InpZoneRule == ZONE_ORDER_BLOCK)
+   {
+     double sL,sH,dL,dH; if(!FindLastOrderBlocks(InpZoneLookupBars, sL,sH,dL,dH)) return false;
+     double obPad = PointsToPrice(atrPts * InpOBPadATRMult);
+     if(sH>0){ supLow = MathMin(sL,sH) - obPad; supHigh = MathMax(sL,sH) + obPad; }
+     if(dH>0){ demLow = MathMin(dL,dH) - obPad; demHigh = MathMax(dL,dH) + obPad; }
+     return (supHigh>0.0 || demHigh>0.0);
+   }
+   return false;
 }
 
 void GetCandle(int shift, double &o, double &h, double &l, double &c)
@@ -347,8 +443,9 @@ void TryEntrySignals()
    double atrPoints; if(!GetATR(atrPoints)) return;
    if(atrPoints < InpMinATRPoints) return; // low volatility filter
 
-   double upFractal, dnFractal; if(!GetLastFractals(upFractal, dnFractal)) return;
-   double zoneHalfWidthPts = MathMax(1.0, atrPoints * InpZoneATRMultiplier);
+   // Compute zones based on rule
+   double supLow=0,supHigh=0,demLow=0,demHigh=0;
+   if(!ComputeZones(supLow,supHigh,demLow,demHigh)) return;
 
    // Current price reference
    if(!RefreshTick()) return;
@@ -356,23 +453,8 @@ void TryEntrySignals()
    double ask = g_tick.ask;
    double mid = (bid+ask)/2.0;
 
-   // Demand zone around last down fractal (support)
-   bool inDemand = false;
-   if(dnFractal > 0.0)
-   {
-      double lower = dnFractal - PointsToPrice(zoneHalfWidthPts);
-      double upper = dnFractal + PointsToPrice(zoneHalfWidthPts);
-      if(mid >= lower && mid <= upper) inDemand = true;
-   }
-
-   // Supply zone around last up fractal (resistance)
-   bool inSupply = false;
-   if(upFractal > 0.0)
-   {
-      double lower = upFractal - PointsToPrice(zoneHalfWidthPts);
-      double upper = upFractal + PointsToPrice(zoneHalfWidthPts);
-      if(mid >= lower && mid <= upper) inSupply = true;
-   }
+   bool inDemand = (demHigh>0.0 && mid>=demLow && mid<=demHigh);
+   bool inSupply = (supHigh>0.0 && mid>=supLow && mid<=supHigh);
 
    DirectionStats buyStats, sellStats; double totalFloating;
    ComputeDirectionStats(buyStats, sellStats, totalFloating);
@@ -740,9 +822,8 @@ void UpdateSNDZones()
       DeleteZoneRect("DEMAND");
       return;
    }
-   double atrPoints; if(!GetATR(atrPoints)) { DeleteZoneRect("SUPPLY"); DeleteZoneRect("DEMAND"); return; }
-   double upFractal=0, dnFractal=0; if(!GetLastFractals(upFractal, dnFractal)) { DeleteZoneRect("SUPPLY"); DeleteZoneRect("DEMAND"); return; }
-   double zoneHalfWidthPts = MathMax(1.0, atrPoints * InpZoneATRMultiplier);
+   double supLow=0,supHigh=0,demLow=0,demHigh=0;
+   if(!ComputeZones(supLow,supHigh,demLow,demHigh)) { DeleteZoneRect("SUPPLY"); DeleteZoneRect("DEMAND"); return; }
 
    int leftBars = MathMax(10, InpZoneHistoryBars);
    int rightBars = MathMax(5, InpZoneRightBars);
@@ -750,27 +831,15 @@ void UpdateSNDZones()
    datetime tLeft  = iTime(g_symbol, InpSignalTimeframe, leftBars);
    if(tLeft == 0) tLeft = TimeCurrent() - (datetime)(PeriodSeconds(InpSignalTimeframe) * leftBars);
 
-   if(upFractal > 0.0)
-   {
-      double lower = upFractal - PointsToPrice(zoneHalfWidthPts);
-      double upper = upFractal + PointsToPrice(zoneHalfWidthPts);
-      DrawOrUpdateZoneRect("SUPPLY", tLeft, tRight, lower, upper, InpSupplyColor);
-   }
+   if(supHigh > 0.0)
+      DrawOrUpdateZoneRect("SUPPLY", tLeft, tRight, supLow, supHigh, InpSupplyColor);
    else
-   {
       DeleteZoneRect("SUPPLY");
-   }
 
-   if(dnFractal > 0.0)
-   {
-      double lower = dnFractal - PointsToPrice(zoneHalfWidthPts);
-      double upper = dnFractal + PointsToPrice(zoneHalfWidthPts);
-      DrawOrUpdateZoneRect("DEMAND", tLeft, tRight, lower, upper, InpDemandColor);
-   }
+   if(demHigh > 0.0)
+      DrawOrUpdateZoneRect("DEMAND", tLeft, tRight, demLow, demHigh, InpDemandColor);
    else
-   {
       DeleteZoneRect("DEMAND");
-   }
 }
 
 void ClearZones()
