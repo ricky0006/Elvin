@@ -114,6 +114,10 @@ double         g_tickValue;
 MqlTick        g_tick;
 long           g_accountNumber;
 
+// Cycle management
+int            g_cycleId = 1;                 // Current cycle id
+bool           g_cycleAdvancedOnThisLock = false;
+
 // Indicator handles
 int            g_handleATR = INVALID_HANDLE;
 int            g_handleFractals = INVALID_HANDLE;
@@ -432,6 +436,117 @@ int CountHedgePositions()
 }
 
 //============================ Trade Helpers ==================================
+string MakeCycleComment(const string base)
+{
+   return base + " CYCLE:" + IntegerToString(g_cycleId);
+}
+
+int ExtractCycleFromComment(const string comment)
+{
+   int pos = StringFind(comment, "CYCLE:", 0);
+   if(pos < 0) return 0;
+   string sub = StringSubstr(comment, pos+6);
+   return (int)StringToInteger(sub);
+}
+
+int DetectMaxCycleFromOpenPositions()
+{
+   int maxCycle = 0;
+   int total = PositionsTotal();
+   for(int i=0;i<total;i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != g_symbol) continue;
+      if((long)PositionGetInteger(POSITION_MAGIC) != InpMagicNumber) continue;
+      string cmt = PositionGetString(POSITION_COMMENT);
+      int cyc = ExtractCycleFromComment(cmt);
+      if(cyc > maxCycle) maxCycle = cyc;
+   }
+   return maxCycle;
+}
+
+bool HasEAOpenPositionsInCycle(int cycleId)
+{
+   int total = PositionsTotal();
+   for(int i=0;i<total;i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != g_symbol) continue;
+      if((long)PositionGetInteger(POSITION_MAGIC) != InpMagicNumber) continue;
+      int cyc = ExtractCycleFromComment(PositionGetString(POSITION_COMMENT));
+      if(cyc == cycleId) return true;
+   }
+   return false;
+}
+
+void ComputeDirectionStatsForCycle(int cycleId, DirectionStats &buyStats, DirectionStats &sellStats, double &totalFloating)
+{
+   buyStats.totalLots = 0; buyStats.positionsCount = 0; buyStats.totalProfit = 0; buyStats.worstPrice = 0; buyStats.lastOpenPrice = 0; buyStats.sumPriceVolume=0; buyStats.avgOpenPrice=0;
+   sellStats.totalLots = 0; sellStats.positionsCount = 0; sellStats.totalProfit = 0; sellStats.worstPrice = 0; sellStats.lastOpenPrice = 0; sellStats.sumPriceVolume=0; sellStats.avgOpenPrice=0;
+   totalFloating = 0;
+
+   int total = PositionsTotal();
+   for(int i=0;i<total;i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != g_symbol) continue;
+      if((long)PositionGetInteger(POSITION_MAGIC) != InpMagicNumber) continue;
+      int cyc = ExtractCycleFromComment(PositionGetString(POSITION_COMMENT));
+      if(cyc != cycleId) continue;
+
+      long type = PositionGetInteger(POSITION_TYPE);
+      double volume = PositionGetDouble(POSITION_VOLUME);
+      double price  = PositionGetDouble(POSITION_PRICE_OPEN);
+      double profit = PositionGetDouble(POSITION_PROFIT);
+
+      totalFloating += profit;
+
+      if(type == POSITION_TYPE_BUY)
+      {
+         buyStats.totalLots += volume;
+         buyStats.positionsCount++;
+         buyStats.totalProfit += profit;
+         buyStats.lastOpenPrice = price;
+         buyStats.sumPriceVolume += price * volume;
+         if(buyStats.worstPrice == 0 || price > buyStats.worstPrice) buyStats.worstPrice = price;
+      }
+      else if(type == POSITION_TYPE_SELL)
+      {
+         sellStats.totalLots += volume;
+         sellStats.positionsCount++;
+         sellStats.totalProfit += profit;
+         sellStats.lastOpenPrice = price;
+         sellStats.sumPriceVolume += price * volume;
+         if(sellStats.worstPrice == 0 || price < sellStats.worstPrice) sellStats.worstPrice = price;
+      }
+   }
+   if(buyStats.totalLots > 0) buyStats.avgOpenPrice = buyStats.sumPriceVolume / buyStats.totalLots;
+   if(sellStats.totalLots > 0) sellStats.avgOpenPrice = sellStats.sumPriceVolume / sellStats.totalLots;
+}
+
+void ManageCycleAdvance()
+{
+   // If current cycle becomes locked, advance to next cycle once
+   DirectionStats b,s; double pf;
+   ComputeDirectionStatsForCycle(g_cycleId, b, s, pf);
+   if(IsLocked(b,s))
+   {
+      if(!g_cycleAdvancedOnThisLock)
+      {
+         g_cycleId++;
+         g_cycleAdvancedOnThisLock = true;
+         PrintFormat("[Cycle] Locked detected. Advancing to new cycle %d", g_cycleId);
+      }
+   }
+   else
+   {
+      g_cycleAdvancedOnThisLock = false;
+   }
+}
+
 bool OpenMarketOrder(ENUM_ORDER_TYPE orderType, double lots, double slPrice=0.0, double tpPrice=0.0, string comment="")
 {
    lots = NormalizeLot(lots);
@@ -440,11 +555,13 @@ bool OpenMarketOrder(ENUM_ORDER_TYPE orderType, double lots, double slPrice=0.0,
    g_trade.SetExpertMagicNumber(InpMagicNumber);
    g_trade.SetDeviationInPoints(InpMaxSlippagePoints);
 
+   string fullComment = MakeCycleComment(comment);
+
    bool ok = false;
    if(orderType == ORDER_TYPE_BUY)
-      ok = g_trade.Buy(lots, g_symbol, 0.0, slPrice, tpPrice, comment);
+      ok = g_trade.Buy(lots, g_symbol, 0.0, slPrice, tpPrice, fullComment);
    else if(orderType == ORDER_TYPE_SELL)
-      ok = g_trade.Sell(lots, g_symbol, 0.0, slPrice, tpPrice, comment);
+      ok = g_trade.Sell(lots, g_symbol, 0.0, slPrice, tpPrice, fullComment);
 
    return ok;
 }
@@ -482,8 +599,8 @@ void TryEntrySignals()
       if(ct == g_lastBarTime) return; // already processed
    }
 
-   // Restrict new base entries if there are existing EA positions
-   if(InpRestrictInitialEntry && HasEAOpenPositions())
+   // Restrict new base entries to one per cycle
+   if(InpRestrictInitialEntry && HasEAOpenPositionsInCycle(g_cycleId))
       return;
 
    double atrPoints; if(!GetATR(atrPoints)) return;
@@ -503,7 +620,7 @@ void TryEntrySignals()
    bool inSupply = (supHigh>0.0 && mid>=supLow && mid<=supHigh);
 
    DirectionStats buyStats, sellStats; double totalFloating;
-   ComputeDirectionStats(buyStats, sellStats, totalFloating);
+   ComputeDirectionStatsForCycle(g_cycleId, buyStats, sellStats, totalFloating);
 
    double lotBudgetLeft = MathMax(0.0, InpMaxTotalLot - (buyStats.totalLots + sellStats.totalLots));
 
@@ -519,10 +636,8 @@ void TryEntrySignals()
       tpPriceSell = ask - PointsToPrice(tpPts);
    }
 
-   // Entry conditions
    if(SpreadOk())
    {
-      // BUY
       if(InpAllowBuy && inDemand && ConfirmBullishRejection())
       {
          if(buyStats.positionsCount < InpMaxPositionsPerDirection && lotBudgetLeft > 0)
@@ -535,7 +650,6 @@ void TryEntrySignals()
          }
       }
 
-      // SELL
       if(InpAllowSell && inSupply && ConfirmBearishRejection())
       {
          if(sellStats.positionsCount < InpMaxPositionsPerDirection && lotBudgetLeft > 0)
@@ -556,7 +670,7 @@ void ManageAveraging()
    double stepPts = InpUseATRGridStep ? MathMax(1.0, atrPoints * InpGridATRMultiplier) : InpGridStepPoints;
 
    DirectionStats buyStats, sellStats; double totalFloating;
-   ComputeDirectionStats(buyStats, sellStats, totalFloating);
+   ComputeDirectionStatsForCycle(g_cycleId, buyStats, sellStats, totalFloating);
 
    if(!RefreshTick()) return;
    double bid = g_tick.bid;
@@ -854,7 +968,7 @@ void ManageHedge()
    double ddPercent = (balance<=0) ? 0 : (MathMax(0.0, (balance - equity)) / balance * 100.0);
 
    DirectionStats buyStats, sellStats; double totalFloating;
-   ComputeDirectionStats(buyStats, sellStats, totalFloating);
+   ComputeDirectionStatsForCycle(g_cycleId, buyStats, sellStats, totalFloating);
 
    int hedgeCount = CountHedgePositions();
 
@@ -1077,9 +1191,13 @@ int OnInit()
    g_minFloatingSeen = 0.0;
    g_initialized = true;
 
+   // Initialize cycle from existing positions
+   int maxCycle = DetectMaxCycleFromOpenPositions();
+   if(maxCycle > 0) g_cycleId = maxCycle; else g_cycleId = 1;
+
    EventSetTimer(2); // for dashboard refresh and management even if no ticks
 
-   PrintFormat("%s initialized on %s (digits=%d, point=%g)", InpEaName, g_symbol, g_digits, g_point);
+   PrintFormat("%s initialized on %s (digits=%d, point=%g) cycle=%d", InpEaName, g_symbol, g_digits, g_point, g_cycleId);
    return(INIT_SUCCEEDED);
 }
 
@@ -1106,6 +1224,9 @@ void OnTick()
 
    // Unlock management when hedged/locked
    ManageHedgeUnlock();
+
+   // Advance cycle when current becomes locked
+   ManageCycleAdvance();
 
    // Core pipeline
    TryEntrySignals();
