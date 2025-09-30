@@ -356,7 +356,8 @@ int OnInit()
 void OnTick()
 {
    if(!IsTradeAllowed()) return;
-   if(!SymbolInfoTick(g_symbol, _Tick)) return;
+   MqlTick lastTick;
+   if(!SymbolInfoTick(g_symbol, lastTick)) return;
 
    BasketInfo bi = GetBasket();
 
